@@ -11,6 +11,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const CONFIG_PATH = ".pi/context-loader.json";
@@ -66,6 +67,15 @@ function loadContext(cwd: string): string | undefined {
 	return `# Project context files\n\nThe following project files are provided as context.\n\n${sections.join("\n\n")}`;
 }
 
+// finds the global context file (agent dir AGENTS.md/CLAUDE.md) among the
+// context files pi core injected into the system prompt
+function findGlobalContextFile(
+	contextFiles: Array<{ path: string; content: string }> | undefined,
+): { path: string; content: string } | undefined {
+	const agentDir = path.resolve(getAgentDir());
+	return contextFiles?.find((f) => path.resolve(path.dirname(f.path)) === agentDir);
+}
+
 // extension entry point: validates context on input, injects it into the system prompt each turn
 export default function contextLoader(pi: ExtensionAPI) {
 	// context loaded during input validation and consumed by before_agent_start,
@@ -92,6 +102,19 @@ export default function contextLoader(pi: ExtensionAPI) {
 		const context = pending;
 		pending = null;
 		if (context === undefined || context === null) return undefined;
-		return { systemPrompt: `${event.systemPrompt}\n\n${context}` };
+		// pi core puts the global AGENTS.md at the start of <project_context>;
+		// move it after the injected files so it comes last. the exact serialized
+		// block is rebuilt from systemPromptOptions to avoid fragile regex matching
+		let base = event.systemPrompt;
+		let globalBlock = "";
+		const globalFile = findGlobalContextFile(event.systemPromptOptions.contextFiles);
+		if (globalFile) {
+			const block = `<project_instructions path="${globalFile.path}">\n${globalFile.content}\n</project_instructions>\n\n`;
+			if (base.includes(block)) {
+				base = base.replace(block, "");
+				globalBlock = `\n\n${block.trimEnd()}`;
+			}
+		}
+		return { systemPrompt: `${base}\n\n${context}${globalBlock}` };
 	});
 }
